@@ -56,7 +56,6 @@ To contribute:
 4. Push to the branch (`git push origin feature/your-feature`).
 5. Open a pull request and describe your changes.
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more details (if available).
 
 ---
 
