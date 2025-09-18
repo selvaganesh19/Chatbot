@@ -6,30 +6,20 @@ from typing import List, Dict, Any, Optional
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 
-DOTENV_PATH = Path(__file__).with_name(".env")
+# Load .env, but it won't be used in production (Vercel uses environment variables)
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 
-# Ensure .env overrides any previously set env vars (e.g., from setx)
-load_dotenv(dotenv_path=DOTENV_PATH, override=True)
-
-# Sanitize and validate key
-raw_key = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_API_KEY = raw_key.strip().strip('"').strip("'")
-
-# For debugging: compare what's in .env to what's loaded
-envfile_key = (dotenv_values(DOTENV_PATH).get("OPENROUTER_API_KEY") or "").strip().strip('"').strip("'")
-env_matches_dotenv = (OPENROUTER_API_KEY[:10] == envfile_key[:10] != "")
-
-if not OPENROUTER_API_KEY or not OPENROUTER_API_KEY.startswith("sk-or-"):
-    raise RuntimeError("OPENROUTER_API_KEY missing/invalid. Put it in .env without quotes (starts with sk-or-).")
-
+# Get API key - in production this comes from Vercel environment
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
 APP_TITLE = os.getenv("APP_TITLE", "Selva Chat Bot")
-ORIGIN = os.getenv("ORIGIN", "http://localhost:5000")
+ORIGIN = os.getenv("ORIGIN", "https://chatbot-selvaganesh19.vercel.app")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Create the app at module level
 app = Flask(__name__, static_folder=".")
 
 @app.get("/")
@@ -43,7 +33,7 @@ def favicon():
 @app.get("/health")
 def health():
     redacted = OPENROUTER_API_KEY[:8] + "..." if OPENROUTER_API_KEY else ""
-    return {"ok": True, "model": OPENROUTER_MODEL, "key": redacted, "env_matches_dotenv": env_matches_dotenv}
+    return {"ok": True, "model": OPENROUTER_MODEL, "key": redacted}
 
 @app.post("/api/chat")
 def chat() -> Any:
@@ -87,10 +77,6 @@ def chat() -> Any:
             msg = err.get("error") if isinstance(err, dict) else err
             if isinstance(msg, dict):
                 msg = msg.get("message", str(msg))
-            if resp.status_code == 401 or (isinstance(msg, str) and "User not found" in msg):
-                msg = "Invalid OpenRouter API key. Make sure your .env is used (override=True) and rotate the key."
-            elif resp.status_code == 402:
-                msg = "OpenRouter billing required or quota exceeded. Use a free model or add credit."
             return jsonify({"error": msg}), resp.status_code
 
         data = resp.json()
@@ -105,6 +91,9 @@ def chat() -> Any:
         traceback.print_exc()
         return jsonify({"error": "Server error contacting OpenRouter."}), 500
 
-# Keep this exactly as is for local dev, Vercel ignores it
+# This special file helps Vercel find your API endpoint
+from ..app import app as application
+
+# Only used for local development
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
