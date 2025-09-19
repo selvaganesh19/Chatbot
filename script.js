@@ -1,5 +1,5 @@
 const MAX_CHARS = 2000;
-const API_URL = "/api/chat";
+const API_URL = "http://127.0.0.1:5000/api/chat";
 
 let chatBox, inputEl, sendBtn, themeToggle, characterCount;
 
@@ -12,6 +12,7 @@ function initTheme() {
   document.documentElement.setAttribute("data-theme", saved);
   updateThemeIcon(saved);
 }
+
 function toggleTheme() {
   const current = document.documentElement.getAttribute("data-theme") || "light";
   const next = current === "light" ? "dark" : "light";
@@ -19,6 +20,7 @@ function toggleTheme() {
   localStorage.setItem("theme", next);
   updateThemeIcon(next);
 }
+
 function updateThemeIcon(theme) {
   if (!themeToggle) return;
   themeToggle.innerHTML = theme === "dark"
@@ -89,19 +91,20 @@ function displayTypingIndicator() {
   removeTypingIndicator();
   typingEl = document.createElement("div");
   typingEl.className = "message bot-message";
-  // Bot is RIGHT: content then avatar
   typingEl.innerHTML = `
+    <div class="bot-avatar"><i class="fa-solid fa-robot"></i></div>
     <div class="message-content typing-indicator">
       <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
-    </div>
-    <div class="bot-avatar"><i class="fa-solid fa-robot"></i></div>`;
+    </div>`;
   chatBox.appendChild(typingEl);
   scrollToBottom();
 }
+
 function removeTypingIndicator() {
   if (typingEl && typingEl.parentNode) typingEl.parentNode.removeChild(typingEl);
   typingEl = null;
 }
+
 function scrollToBottom() {
   chatBox.scrollTop = chatBox.scrollHeight;
 }
@@ -110,25 +113,29 @@ function scrollToBottom() {
 async function copyMessage(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
-    btn.textContent = "Copied";
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-check"></i><span class="copy-label">Copied</span>';
     btn.classList.add("copied");
     setTimeout(() => {
-      btn.textContent = "Copy";
+      btn.innerHTML = originalText;
       btn.classList.remove("copied");
     }, 1200);
   } catch {
-    btn.textContent = "Error";
-    setTimeout(() => (btn.textContent = "Copy"), 1200);
+    btn.innerHTML = '<i class="fa-solid fa-times"></i><span class="copy-label">Error</span>';
+    setTimeout(() => {
+      btn.innerHTML = '<i class="fa-regular fa-copy"></i><span class="copy-label">Copy</span>';
+    }, 1200);
   }
 }
 
 // INPUT
 function updateCharacterCount() {
-  if (!inputEl || !characterCount || !sendBtn) return; // guard until DOM ready
+  if (!inputEl || !characterCount || !sendBtn) return;
   const len = inputEl.value.length;
   characterCount.textContent = `${len} / ${MAX_CHARS}`;
   sendBtn.disabled = len === 0 || len > MAX_CHARS;
 }
+
 function autoResizeTextarea() {
   if (!inputEl) return;
   inputEl.style.height = "auto";
@@ -141,7 +148,9 @@ async function sendMessage() {
   if (!text) return;
 
   displayMessage(text, true);
+  // Store message in history with correct format for Flask API
   history.push({ role: "user", content: text });
+  
   inputEl.value = "";
   updateCharacterCount();
   autoResizeTextarea();
@@ -153,33 +162,65 @@ async function sendMessage() {
     const res = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, history }),
+      body: JSON.stringify({ 
+        message: text, 
+        history: history 
+      }),
     });
 
     let data = {};
-    try { data = await res.json(); } catch {}
+    try { 
+      data = await res.json(); 
+    } catch (parseError) {
+      console.error("Failed to parse JSON response:", parseError);
+    }
 
     if (!res.ok) {
-      const msg =
-        data?.error ||
-        (res.status === 401
-          ? "Invalid API key. Check your .env and restart the server."
-          : res.status === 402
-          ? "Billing required or quota exceeded. Use a free model or add credit."
-          : `Request failed (HTTP ${res.status}).`);
+      let errorMessage = "Something went wrong. Please try again.";
+      
+      if (data?.error) {
+        errorMessage = data.error;
+      } else {
+        switch (res.status) {
+          case 400:
+            errorMessage = "Bad request. Please check your message.";
+            break;
+          case 401:
+            errorMessage = "Invalid API key. Check your .env and restart the server.";
+            break;
+          case 402:
+            errorMessage = "Billing required or quota exceeded. Use a free model or add credit.";
+            break;
+          case 500:
+            errorMessage = "Server error. Please try again later.";
+            break;
+          case 503:
+            errorMessage = "AI service unavailable. Please try again.";
+            break;
+          case 504:
+            errorMessage = "Request timeout. Please try again.";
+            break;
+          default:
+            errorMessage = `Request failed (HTTP ${res.status}).`;
+        }
+      }
+      
       removeTypingIndicator();
-      displayMessage(msg, false);
+      displayMessage(errorMessage, false);
       return;
     }
 
     const reply = data.reply || "Sorry, I couldn't get a response.";
     removeTypingIndicator();
     displayMessage(reply, false);
+    
+    // Store assistant response in history
     history.push({ role: "assistant", content: reply });
+    
   } catch (e) {
     removeTypingIndicator();
-    displayMessage("Network error. Please try again.", false);
-    console.error(e);
+    displayMessage("Network error. Please check your connection and try again.", false);
+    console.error("Network error:", e);
   } finally {
     sendBtn.disabled = false;
   }
@@ -194,7 +235,7 @@ document.addEventListener("DOMContentLoaded", () => {
   characterCount = document.querySelector(".character-count");
 
   initTheme();
-  displayMessage("Hi! Ask me anything.", false);
+  displayMessage("Hi! I'm Selva's Chat Bot. Ask me anything!", false);
 
   // Listeners
   themeToggle?.addEventListener("click", toggleTheme);

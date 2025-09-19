@@ -1,99 +1,106 @@
 import os
-import json
 import traceback
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
+# Load environment variables
+load_dotenv()
 
-# Load .env, but it won't be used in production (Vercel uses environment variables)
-load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
-
-# Get API key - in production this comes from Vercel environment
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
+# Configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
 APP_TITLE = os.getenv("APP_TITLE", "Selva Chat Bot")
-ORIGIN = os.getenv("ORIGIN", "https://chatbot-selvaganesh19.vercel.app")
-
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Create the app at module level
-app = Flask(__name__, static_folder=".")
+# Create Flask app
+app = Flask(__name__)
 
-@app.get("/")
+# Enable CORS for all routes
+CORS(app, origins=["*"])
+
+@app.route("/")
 def root():
-    return send_from_directory(".", "index.html")
+    return jsonify({"message": "Selva Chat Bot API", "status": "running"})
 
-@app.get("/favicon.ico")
-def favicon():
-    return ("", 204)
 
-@app.get("/health")
+@app.route("/health")
 def health():
     redacted = OPENROUTER_API_KEY[:8] + "..." if OPENROUTER_API_KEY else ""
-    return {"ok": True, "model": OPENROUTER_MODEL, "key": redacted}
+    return jsonify({"ok": True, "model": OPENROUTER_MODEL, "key": redacted})
 
-@app.post("/api/chat")
-def chat() -> Any:
-    payload = request.get_json(silent=True) or {}
-    user_message: str = (payload.get("message") or "").strip()
-    history: Optional[List[Dict[str, str]]] = payload.get("history") or []
-
-    if not user_message:
-        return jsonify({"error": "message is required"}), 400
-
-    # Compose messages with a single system prompt
-    messages: List[Dict[str, str]] = []
-    if not any(m.get("role") == "system" for m in history):
-        messages.append({
-            "role": "system",
-            "content": "You are a concise, friendly assistant for Selva's Chat-Bot.",
-        })
-    messages.extend([m for m in history if m.get("role") in ("system", "user", "assistant")])
-    messages.append({"role": "user", "content": user_message})
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": ORIGIN,
-        "X-Title": APP_TITLE,
-    }
-    body = {
-        "model": OPENROUTER_MODEL,  # e.g., "openai/gpt-oss-20b:free" (default) or "openai/gpt-5" if you have access
-        "messages": messages,
-    }
-
+@app.route("/api/chat", methods=["POST"])
+def chat():
     try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, data=json.dumps(body), timeout=60)
-        if resp.status_code != 200:
-            # Forward OpenRouter error to the client with the same status
-            try:
-                err = resp.json()
-            except Exception:
-                err = {"error": resp.text}
-            # Friendlier messages for common cases
-            msg = err.get("error") if isinstance(err, dict) else err
-            if isinstance(msg, dict):
-                msg = msg.get("message", str(msg))
-            return jsonify({"error": msg}), resp.status_code
+        payload = request.get_json(silent=True) or {}
+        user_message = (payload.get("message") or "").strip()
+        history = payload.get("history") or []
 
-        data = resp.json()
+        if not user_message:
+            return jsonify({"error": "Message is required"}), 400
+
+        if not OPENROUTER_API_KEY:
+            return jsonify({"error": "API key not configured"}), 500
+
+        # Build messages array
+        messages = []
+        if not any(m.get("role") == "system" for m in history):
+            messages.append({
+                "role": "system",
+                "content": "You are a helpful, concise, and friendly assistant for Selva's Chat-Bot."
+            })
+        
+        # Add valid history messages
+        messages.extend([m for m in history if m.get("role") in ("system", "user", "assistant")])
+        messages.append({"role": "user", "content": user_message})
+
+        # API request
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "X-Title": APP_TITLE,
+        }
+
+        body = {
+            "model": OPENROUTER_MODEL,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+
+        response = requests.post(
+            OPENROUTER_URL, 
+            headers=headers, 
+            json=body, 
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            error_data = response.json() if response.headers.get('content-type') == 'application/json' else {"error": response.text}
+            error_message = error_data.get("error", {}).get("message", "API request failed") if isinstance(error_data.get("error"), dict) else str(error_data.get("error", "Unknown error"))
+            return jsonify({"error": error_message}), response.status_code
+
+        data = response.json()
         reply = (
             data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "Sorry, I couldn't get a response.")
+            .get("message", {})
+            .get("content", "Sorry, I couldn't generate a response.")
         )
+
         return jsonify({"reply": reply})
+
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Request timeout. Please try again."}), 504
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {e}")
+        return jsonify({"error": "Failed to connect to AI service."}), 503
     except Exception as e:
-        print("Error calling OpenRouter:", e)
+        print(f"Unexpected error: {e}")
         traceback.print_exc()
-        return jsonify({"error": "Server error contacting OpenRouter."}), 500
+        return jsonify({"error": "Internal server error."}), 500
 
-# This special file helps Vercel find your API endpoint
-from ..app import app as application
+# For Vercel deployment
+application = app
 
-# Only used for local development
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(port=5000, debug=True)
