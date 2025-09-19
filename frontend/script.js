@@ -1,10 +1,25 @@
 const MAX_CHARS = 2000;
-const API_URL = "http://127.0.0.1:5000/api/chat";
+// const API_URL = "http://127.0.0.1:5000/api/chat"; // Old Flask API
+const GRADIO_URL = "selva1909/AI-chat-bot";
+let gradioClient = null; // Will store the client instance
 
 let chatBox, inputEl, sendBtn, themeToggle, characterCount;
 
 // Chat history sent to backend
 const history = [];
+const gradioHistory = []; // For Gradio format
+
+// Initialize Gradio client
+async function initGradioClient() {
+  try {
+    gradioClient = await window.GradioClient.connect(GRADIO_URL);
+    console.log("Gradio client connected successfully");
+    return true;
+  } catch (err) {
+    console.error("Failed to connect to Gradio:", err);
+    return false;
+  }
+}
 
 // THEME
 function initTheme() {
@@ -142,14 +157,22 @@ function autoResizeTextarea() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
 }
 
-// SEND
+// SEND (updated to use Gradio)
 async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text) return;
 
   displayMessage(text, true);
-  // Store message in history with correct format for Flask API
+  
+  // Store message in our app's history format
   history.push({ role: "user", content: text });
+  
+  // Convert to Gradio's expected format (pairs of messages)
+  if (gradioHistory.length === 0 || gradioHistory[gradioHistory.length-1][0]) {
+    gradioHistory.push([text, null]);
+  } else {
+    gradioHistory[gradioHistory.length-1][0] = text;
+  }
   
   inputEl.value = "";
   updateCharacterCount();
@@ -159,62 +182,34 @@ async function sendMessage() {
   displayTypingIndicator();
 
   try {
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        message: text, 
-        history: history 
-      }),
-    });
-
-    let data = {};
-    try { 
-      data = await res.json(); 
-    } catch (parseError) {
-      console.error("Failed to parse JSON response:", parseError);
-    }
-
-    if (!res.ok) {
-      let errorMessage = "Something went wrong. Please try again.";
-      
-      if (data?.error) {
-        errorMessage = data.error;
-      } else {
-        switch (res.status) {
-          case 400:
-            errorMessage = "Bad request. Please check your message.";
-            break;
-          case 401:
-            errorMessage = "Invalid API key. Check your .env and restart the server.";
-            break;
-          case 402:
-            errorMessage = "Billing required or quota exceeded. Use a free model or add credit.";
-            break;
-          case 500:
-            errorMessage = "Server error. Please try again later.";
-            break;
-          case 503:
-            errorMessage = "AI service unavailable. Please try again.";
-            break;
-          case 504:
-            errorMessage = "Request timeout. Please try again.";
-            break;
-          default:
-            errorMessage = `Request failed (HTTP ${res.status}).`;
-        }
-      }
-      
+    if (!gradioClient && !(await initGradioClient())) {
+      // Fallback to local API if Gradio connection fails
       removeTypingIndicator();
-      displayMessage(errorMessage, false);
+      displayMessage("Could not connect to AI service. Please try again later.", false);
+      console.error("Failed to initialize Gradio client");
+      sendBtn.disabled = false;
       return;
     }
-
-    const reply = data.reply || "Sorry, I couldn't get a response.";
+    
+    // Call Gradio API
+    const result = await gradioClient.predict("/user_submit", { 		
+      user_message: text, 		
+      chat_history: gradioHistory
+    });
+    
+    console.log("Gradio response:", result.data); // Log the response as requested
+    
+    // Extract the reply (second element has the updated chat history)
+    const reply = result.data[1][result.data[1].length - 1][1];
+    
+    // Update our gradio history format
+    gradioHistory.pop(); // Remove the last [user, null] pair
+    gradioHistory.push([text, reply]); // Add the complete pair
+    
     removeTypingIndicator();
     displayMessage(reply, false);
     
-    // Store assistant response in history
+    // Store assistant response in our history format too
     history.push({ role: "assistant", content: reply });
     
   } catch (e) {
@@ -227,7 +222,7 @@ async function sendMessage() {
 }
 
 // BOOTSTRAP
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   chatBox = document.getElementById("chat-box");
   inputEl = document.getElementById("user-input");
   sendBtn = document.getElementById("send-btn");
@@ -235,7 +230,30 @@ document.addEventListener("DOMContentLoaded", () => {
   characterCount = document.querySelector(".character-count");
 
   initTheme();
-  displayMessage("Hi! I'm Selva's Chat Bot. Ask me anything!", false);
+  
+  // Initialize Gradio client
+  const connected = await initGradioClient();
+  
+  // Show appropriate welcome message
+  if (connected) {
+    try {
+      // Try to get initial message from /lambda endpoint
+      const initialResult = await gradioClient.predict("/lambda", {});
+      console.log("Initial state:", initialResult.data);
+      
+      // Use the initial message or fallback
+      const welcomeMsg = initialResult.data && initialResult.data[0] && initialResult.data[0][1]
+        ? initialResult.data[0][1]
+        : "Hi! I'm Selva's Chat Bot. Ask me anything!";
+      
+      displayMessage(welcomeMsg, false);
+    } catch (err) {
+      console.error("Error getting initial state:", err);
+      displayMessage("Hi! I'm Selva's Chat Bot. Ask me anything!", false);
+    }
+  } else {
+    displayMessage("Warning: Could not connect to AI service. Please check your connection.", false);
+  }
 
   // Listeners
   themeToggle?.addEventListener("click", toggleTheme);
