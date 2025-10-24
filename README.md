@@ -46,7 +46,7 @@ Whether you’re a developer seeking to integrate chat experiences into your app
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/Chatbot.git
+git clone https://github.com/selvaganesh19/Chatbot.git
 cd Chatbot
 ```
 
